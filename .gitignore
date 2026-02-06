@@ -1,0 +1,35 @@
+# --- Build Artifacts ---
+/bin/
+/build/
+/obj/
+*.o
+*.d
+*.a
+*.so
+*.out
+*.exe
+
+# --- Debugging & Profiling ---
+*.log
+valgrind.out*
+callgrind.out*
+gmon.out
+perf.data
+perf.data.old
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Documentation ---
+# Keep /docs/ but ignore generated site builds if you use them
+_site/
+doxygen/
+
+# --- Tools ---
+compile_commands.json
+.clang-format
