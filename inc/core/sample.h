@@ -1,6 +1,7 @@
 #ifndef MEMSCOPE_SAMPLE_H
 #define MEMSCOPE_SAMPLE_H
 
+#include "util/arena.h" // Needed for Arena*
 #include <stdint.h>
 #include <sys/types.h> // for pid_t
 
@@ -65,15 +66,29 @@ typedef struct {
     uint64_t timestamp_ms;    // Monotonic time of capture
     
     // --- Global Memory Context ---
-    uint64_t system_total_ram;// From /proc/meminfo
-    uint64_t system_free_ram; // From /proc/meminfo
-    uint64_t system_cached_ram;
+    uint64_t system_total_ram; // MemTotal
+    uint64_t system_free_ram;  // MemAvailable (The "real" free memory)
+    uint64_t system_cached_ram;// Cached + Buffers
+    uint64_t system_total_swap;// SwapTotal
+    uint64_t system_free_swap; // SwapFree (If this drops, panic)
     
     // --- The Process List ---
-    size_t process_count;     // Number of valid processes in the array
-    size_t capacity;          // Max capacity (for safety checks)
-    process_snapshot_t *processes; // Pointer into the Arena (contiguous array)
+    size_t process_count;
+    size_t capacity;
+    process_snapshot_t *processes;
     
 } sample_t;
+
+/**
+ * Captures a full system snapshot.
+ * 1. Initializes system (if needed).
+ * 2. Reads global memory stats.
+ * 3. Scans all processes.
+ * 4. Sorts processes by PID.
+ * @param sample Output struct (does not need to be allocated, just declared).
+ * @param a Memory arena to use for storing the process list.
+ * @return 0 on success, -1 on failure.
+ */
+int sample_capture(sample_t *sample, Arena *a);
 
 #endif // MEMSCOPE_SAMPLE_H

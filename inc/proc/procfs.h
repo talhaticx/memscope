@@ -69,4 +69,11 @@ uint64_t procfs_scan_kb(const char *buf, const char *key);
  */
 void procfs_scan_str(const char *buf, const char *key, char *out, size_t max_len);
 
+/**
+ * Reads /proc/meminfo and populates system-wide metrics.
+ * @param sample Pointer to the sample struct to update.
+ * @return 0 on success, -1 on failure.
+ */
+int procfs_read_meminfo(sample_t *sample);
+
 #endif // MEMSCOPE_PROCFS_H

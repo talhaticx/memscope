@@ -26,6 +26,11 @@ int procfs_scan(sample_t *sample, Arena *a) {
 
     sample->timestamp_ms = 0;
     sample->process_count = 0;
+
+    if (procfs_read_meminfo(sample) != 0) {
+        // Warning only, we can still scan processes
+        LOG_WARN("Could not read system memory stats");
+    }
     
     // Capture the starting pointer in the Arena.
     // The cast is necessary because buf is uint8_t* but we need struct pointer
