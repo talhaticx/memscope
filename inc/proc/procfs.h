@@ -2,12 +2,12 @@
 #define MEMSCOPE_PROCFS_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <unistd.h> // for sysconf
 
 #define PROC_ROOT "/proc"
 
 // Global System Constants (Populated by procfs_init)
-// We use 'extern' so they are accessible anywhere but defined in .c
 extern long sc_clk_tck;   // Clock ticks per second (usually 100)
 extern long sc_page_size; // Bytes per page (usually 4096)
 
@@ -29,5 +29,33 @@ int procfs_init(void);
  * @return Number of bytes read, or -1 on error.
  */
 ssize_t procfs_read_file(const char *path, char *buf, size_t max_len);
+
+/**
+ * Scans a buffer for "Key: 123" and returns 123.
+ * Used for /proc/[pid]/io.
+ * @param buf Target buffer
+ * @param key Key to find (e.g., "read_bytes:")
+ * @return Unsigned Integer value, or 0 if not found.
+ */
+uint64_t procfs_scan_u64(const char *buf, const char *key);
+
+/**
+ * Scans a buffer for "Key: 123 kB" and returns 123 * 1024.
+ * Used for /proc/[pid]/status.
+ * @param buf Target buffer
+ * @param key Key to find (e.g., "VmRSS:")
+ * @return Unsigned Integer value in Bytes, or 0 if not found.
+ */
+uint64_t procfs_scan_kb(const char *buf, const char *key);
+
+/**
+ * Scans a buffer for "Key: value_string" and copies it.
+ * Used for /proc/[pid]/status Name field.
+ * @param buf Source buffer
+ * @param key Key to find (e.g., "Name:")
+ * @param out Destination buffer
+ * @param max_len Max chars to write to out
+ */
+void procfs_scan_str(const char *buf, const char *key, char *out, size_t max_len);
 
 #endif // MEMSCOPE_PROCFS_H
