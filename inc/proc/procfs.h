@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <unistd.h> // for sysconf
+#include "core/sample.h" // For sample_t
+#include "util/arena.h"  // For Arena
 
 #define PROC_ROOT "/proc"
 
@@ -29,6 +31,15 @@ int procfs_init(void);
  * @return Number of bytes read, or -1 on error.
  */
 ssize_t procfs_read_file(const char *path, char *buf, size_t max_len);
+
+/**
+ * Scans /proc for all active processes.
+ * Populates the sample->processes array using memory from the Arena.
+ * * @param sample Pointer to the system snapshot to populate.
+ * @param a The memory arena to allocate process structs from.
+ * @return Number of processes scanned, or -1 on critical error.
+ */
+int procfs_scan(sample_t *sample, Arena *a);
 
 /**
  * Scans a buffer for "Key: 123" and returns 123.

@@ -15,14 +15,10 @@ void pid_parse_status(pid_t pid, process_snapshot_t *out) {
     snprintf(path, sizeof(path), "/proc/%d/status", pid);
 
     // 1. Read the file
-    ssize_t bytes = procfs_read_file(path, buf, sizeof(buf));
     if (procfs_read_file(path, buf, sizeof(buf)) <= 0) {
-        // Process likely died or access denied
         out->swap_bytes = 0;
         return;
     }
-
-    const char *val;
 
     // 2. Grab the values
     out->swap_bytes = procfs_scan_kb(buf, "VmSwap:");
