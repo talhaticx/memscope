@@ -5,7 +5,7 @@
 # --- CONFIGURATION ---
 CC      := gcc
 CFLAGS  := -Wall -Wextra -pedantic -std=c11 -O2 -g -MMD -MP -Iinc
-
+LDFLAGS := -lncurses
 # Paths
 SRC_DIR := src
 TEST_DIR:= tests

@@ -24,7 +24,7 @@ int procfs_scan(sample_t *sample, Arena *a) {
         return -1;
     }
 
-    sample->timestamp_ms = 0;
+    // sample->timestamp_ms = 0;
     sample->process_count = 0;
 
     if (procfs_read_meminfo(sample) != 0) {

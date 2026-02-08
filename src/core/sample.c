@@ -3,6 +3,7 @@
 #include "core/time.h"
 #include "util/log.h"
 #include <stdlib.h> // for qsort
+#include <string.h>
 
 // Helper: Comparator for qsort
 // Returns <0 if a < b, 0 if a == b, >0 if a > b
@@ -44,4 +45,25 @@ int sample_capture(sample_t *sample, Arena *a) {
           compare_pids);
 
     return 0;
+}
+
+void sample_copy(const sample_t *src, sample_t *dst, Arena *a) {
+    if (!src || !dst || !a) return;
+    
+    *dst = *src; // Copy scalars
+    
+    if (src->process_count > 0 && src->processes) {
+        dst->processes = arena_alloc(a, sizeof(process_snapshot_t) * src->process_count);
+        if (dst->processes) {
+            // We need string.h for memcpy
+            extern void *memcpy(void *dest, const void *src, size_t n);
+            memcpy(dst->processes, src->processes, sizeof(process_snapshot_t) * src->process_count);
+        } else {
+            dst->process_count = 0;
+            dst->processes = NULL;
+        }
+    } else {
+        dst->processes = NULL;
+        dst->process_count = 0;
+    }
 }

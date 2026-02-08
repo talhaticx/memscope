@@ -30,6 +30,8 @@ typedef enum {
  * tight packing and alignment, minimizing memory waste in the Arena.
  */
 typedef struct {
+    // --- Computed Metrics (8 bytes) ---
+    double cpu_pct;           // CPU Usage % (0.0 to 100.0+)
     // --- Identity & Lifecycle ---
     uint64_t start_time;      // Jiffies since boot (Critical for distinguishing PID reuse)
     
@@ -90,5 +92,13 @@ typedef struct {
  * @return 0 on success, -1 on failure.
  */
 int sample_capture(sample_t *sample, Arena *a);
+
+/**
+ * Deep copy a sample to a destination sample using the provided arena.
+ * @param src Source sample
+ * @param dst Destination sample (will be overwritten)
+ * @param a Arena to allocate process list in
+ */
+void sample_copy(const sample_t *src, sample_t *dst, Arena *a);
 
 #endif // MEMSCOPE_SAMPLE_H
