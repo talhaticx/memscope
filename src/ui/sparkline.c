@@ -1,3 +1,19 @@
+/**
+ * @file sparkline.c
+ * @brief Unicode sparkline graphs for memory trend visualization.
+ *
+ * Renders compact line graphs using Unicode block characters:
+ *   ▁▂▃▄▅▆▇█
+ *
+ * Features:
+ *   - 8 levels of vertical precision per character
+ *   - Automatic min/max scaling
+ *   - Multi-row graphs for detailed inspect view (in display.c)
+ *   - Single-row compact sparklines for quick trends
+ *
+ * @see inc/ui/sparkline.h for API
+ */
+
 #define _POSIX_C_SOURCE 200809L
 #include "ui/sparkline.h"
 #include <ncurses.h>

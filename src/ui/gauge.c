@@ -1,3 +1,18 @@
+/**
+ * @file gauge.c
+ * @brief Unicode block gauges for visual memory/CPU representation.
+ *
+ * Renders horizontal gauges using Unicode block elements:
+ *   [████████░░░░░░░░] 66%
+ *
+ * Features:
+ *   - Sub-character precision using 8-level fractional blocks (▏▎▍▌▋▊▉█)
+ *   - Three-tier coloring: green (low), yellow (medium), red (high)
+ *   - Automatic clamping for out-of-range values
+ *
+ * @see inc/ui/gauge.h for API
+ */
+
 #define _POSIX_C_SOURCE 200809L
 #include "ui/gauge.h"
 #include <ncurses.h>

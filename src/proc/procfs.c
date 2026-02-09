@@ -1,3 +1,20 @@
+/**
+ * @file procfs.c
+ * @brief Low-level /proc filesystem reading utilities.
+ *
+ * Provides efficient file reading for the Linux /proc pseudo-filesystem:
+ *   - procfs_read_file(): Read file contents into buffer
+ *   - procfs_init(): Initialize page size and other system constants
+ *   - procfs_scan(): Walk /proc and capture all process data
+ *
+ * Performance Considerations:
+ *   - Uses O_CLOEXEC to prevent file descriptor leakage to child processes
+ *   - Reads entire small files in one syscall when possible
+ *   - Avoids stat() calls by relying on /proc file behavior
+ *
+ * @see inc/proc/procfs.h for API
+ */
+
 // MUST BE FIRST: Enables O_CLOEXEC and other POSIX features
 #define _POSIX_C_SOURCE 200809L
 

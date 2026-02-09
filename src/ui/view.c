@@ -1,3 +1,25 @@
+/**
+ * @file view.c
+ * @brief ViewState module for stable UI selection.
+ *
+ * Problem Solved:
+ *   When user navigates to row 5 and presses Enter, the process list may
+ *   re-sort between the moment they see it and the moment Enter is processed.
+ *   This causes the wrong process to be selected!
+ *
+ * Solution:
+ *   Freeze the visible rows at render time. Input handling reads from this
+ *   frozen snapshot, guaranteeing it matches what the user sees.
+ *
+ * Usage:
+ *   1. ui_draw() calls view_begin_frame() at start
+ *   2. For each visible row, calls view_add_row()
+ *   3. ui_draw() calls view_end_frame() when done
+ *   4. Later, view_get_selected_pid() returns the frozen PID
+ *
+ * @see inc/ui/view.h for ViewState and ViewRow structures
+ */
+
 #include "ui/view.h"
 #include <string.h>
 

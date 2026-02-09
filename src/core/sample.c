@@ -1,3 +1,20 @@
+/**
+ * @file sample.c
+ * @brief System-wide snapshot capture coordinator.
+ *
+ * This module orchestrates the capture of a complete system snapshot:
+ *   1. Initializes procfs subsystem (lazy, on first call)
+ *   2. Reads global memory stats from /proc/meminfo
+ *   3. Scans all processes via /proc/[pid]/
+ *   4. Sorts processes by PID for O(N) diffing
+ *
+ * Memory Management:
+ *   All process data is allocated from the provided Arena.
+ *   Call arena_reset() before capture to reuse memory.
+ *
+ * @see inc/core/sample.h for data structures
+ */
+
 #include "core/sample.h"
 #include "proc/procfs.h"
 #include "core/time.h"

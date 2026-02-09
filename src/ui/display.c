@@ -1,3 +1,22 @@
+/**
+ * @file display.c
+ * @brief Main UI rendering module using ncurses.
+ *
+ * This module handles all terminal rendering including:
+ *   - Main process list view with sorting and grouping
+ *   - Inspect mode with memory breakdown and sparkline graph
+ *   - Input handling (keyboard navigation, sort keys)
+ *   - Color schemes and visual elements
+ *
+ * Key Features:
+ *   - Auto-baseline tracking: Stores first-seen RSS per PID in baseline_hash[]
+ *   - ViewState integration: Freezes visible rows for stable selection
+ *   - Unicode gauges and multi-row sparkline graphs
+ *
+ * @see inc/ui/display.h for public API
+ * @see inc/ui/view.h for ViewState architecture
+ */
+
 #define _POSIX_C_SOURCE 200809L
 #include "ui/display.h"
 #include "ui/gauge.h"

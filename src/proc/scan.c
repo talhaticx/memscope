@@ -1,3 +1,18 @@
+/**
+ * @file scan.c
+ * @brief Directory walker for /proc filesystem.
+ *
+ * Scans /proc to discover all running processes:
+ *   1. Opens /proc directory
+ *   2. Filters for numeric subdirectories (PIDs)
+ *   3. Calls pid_parse_stat() for each discovered process
+ *   4. Optionally reads /proc/meminfo for system stats
+ *
+ * Complexity: O(N) where N = number of processes (~100-500 typical)
+ *
+ * @see inc/proc/procfs.h for procfs_scan() API
+ */
+
 // MUST BE FIRST: Enables Linux extensions (DT_DIR, d_type)
 #define _DEFAULT_SOURCE 
 

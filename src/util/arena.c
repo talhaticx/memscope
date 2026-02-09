@@ -1,3 +1,26 @@
+/**
+ * @file arena.c
+ * @brief Linear (bump) allocator for zero-malloc hot path.
+ *
+ * The Arena allocator is the performance foundation of memscope.
+ * Instead of calling malloc/free for each process snapshot, we:
+ *
+ *   1. Pre-allocate a large block (e.g., 4MB) at startup
+ *   2. Bump a pointer for each allocation — O(1), no fragmentation
+ *   3. Reset pointer to start when done — O(1), no individual frees
+ *
+ * This eliminates all memory allocation overhead in the capture loop,
+ * which runs 60+ times per second.
+ *
+ * Memory Layout:
+ *   [Arena struct] --> [buf: uint8_t* ----------------...]
+ *                       ^                               ^
+ *                       |                               |
+ *                     offset=0                        size
+ *
+ * @see inc/util/arena.h for API
+ */
+
 #include "util/arena.h"
 #include "util/log.h"
 #include <stdlib.h>

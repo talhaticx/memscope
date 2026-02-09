@@ -1,3 +1,26 @@
+/**
+ * @file smaps.c
+ * @brief 3-level memory breakdown parser with automatic fallback.
+ *
+ * Provides detailed memory breakdown per process using three data sources:
+ *
+ *   Level 1: /proc/[pid]/smaps_rollup (kernel 4.14+)
+ *            - Fastest, kernel pre-aggregates all mappings
+ *            - Best choice when available
+ *
+ *   Level 2: /proc/[pid]/smaps
+ *            - Detailed per-mapping breakdown
+ *            - Slower (can be 100KB+ for large processes)
+ *            - Fallback when rollup unavailable
+ *
+ *   Level 3: /proc/[pid]/status
+ *            - Basic VmRSS only
+ *            - Always available, but minimal detail
+ *            - Last resort fallback
+ *
+ * @see inc/proc/smaps.h for API and smaps_breakdown_t struct
+ */
+
 #define _POSIX_C_SOURCE 200809L
 #include "proc/smaps.h"
 #include "proc/procfs.h"

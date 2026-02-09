@@ -1,3 +1,22 @@
+/**
+ * @file pid_stat.c
+ * @brief Parser for /proc/[pid]/stat files.
+ *
+ * Extracts core process metrics from the kernel's stat file:
+ *   - PID, parent PID, process state
+ *   - CPU times (user, system)
+ *   - Memory (RSS in pages)
+ *   - Start time (for PID reuse detection)
+ *
+ * Format (space-separated, field 2 is comm in parentheses):
+ *   pid (comm) state ppid ... utime stime ... rss ...
+ *
+ * Gotcha: Process names can contain spaces and parentheses!
+ *   We find the LAST ')' to correctly parse the comm field.
+ *
+ * @see inc/proc/pid.h for pid_parse_stat() API
+ */
+
 // Enable POSIX features for snprintf
 #define _POSIX_C_SOURCE 200809L
 

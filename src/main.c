@@ -1,3 +1,26 @@
+/**
+ * @file main.c
+ * @brief Memscope application entry point and main event loop.
+ *
+ * This file implements the core application loop which:
+ *   1. Initializes memory arenas (double-buffering for zero-malloc hot path)
+ *   2. Handles user input (navigation, inspect mode, baseline reset)
+ *   3. Captures system/process data at 1 Hz
+ *   4. Renders the UI at 60 FPS
+ *
+ * Architecture:
+ *   - Two arenas (arena_a, arena_b) swap each capture tick
+ *   - A third arena (arena_baseline) stores the user-set baseline
+ *   - ViewState (in display.c) freezes UI state during render for stable selection
+ *
+ * Main Loop Structure:
+ *   while (running) {
+ *       A. Handle input (60 FPS polling)
+ *       B. Capture data (1 Hz)
+ *       C. Render UI (60 FPS)
+ *   }
+ */
+
 // Enable Linux/BSD default features (includes usleep, DT_DIR, etc.)
 #define _DEFAULT_SOURCE
 

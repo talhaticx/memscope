@@ -1,140 +1,185 @@
 # memscope — Source Code Architecture
 
 This document outlines the responsibility of every file in the project.
-**Philosophy:** Separation of concerns. The `proc/` layer gathers data, `core/` analyzes it, and `util/` provides the memory infrastructure.
+
+**Philosophy:** Separation of concerns. The `proc/` layer gathers data, `core/` captures it, `ui/` displays it, and `util/` provides infrastructure.
 
 ---
 
 ## 📂 Root Directory
-The entry point and build configuration.
 
-* **`Makefile`**
-    * **Task:** The build recipe.
-    * **Details:** Must compile all `*.c` files in `src/**/*.c`. Links them into the final `bin/memscope` executable. Must include flags `-Wall -Wextra -Werror -O2` to ensure code quality.
-* **`main.c`**
-    * **Task:** The application driver.
-    * **Details:**
-        1.  Initializes the Memory Arenas (Double buffering).
-        2.  Parses command line arguments (interval, PID filtering).
-        3.  Runs the Main Loop: `Capture -> Diff -> Print -> Sleep`.
-        4.  Handles signals (Ctrl+C) for graceful shutdown.
+| File | Purpose |
+|------|---------|
+| `Makefile` | Build recipe. Compiles all `src/**/*.c` into `bin/memscope` |
+| `README.md` | Project overview, features, usage |
+| `CONTRIBUTING.md` | Contribution guidelines |
+
+---
+
+## 📂 src/ (Source Files)
+
+### `main.c` — Application Driver
+The entry point implementing the main loop:
+1. Initializes memory arenas (double-buffering)
+2. Handles user input (60 FPS polling)
+3. Captures system data (1 Hz)
+4. Renders UI (60 FPS)
+5. Handles graceful shutdown (Ctrl+C)
+
+---
+
+### 📂 src/core/ — The Brain
+Business logic for data capture and timing.
+
+| File | Purpose |
+|------|---------|
+| `sample.c` | **Coordinator** — Calls scanners, fills `sample_t`, sorts by PID |
+| `time.c` | **Clock** — Monotonic timing via `clock_gettime(CLOCK_MONOTONIC)` |
+| `engine.c` | Background collection engine (thread-based, currently unused) |
+| `diff.c` | Sample comparison (detects new/dead/changed processes) |
+
+---
+
+### 📂 src/proc/ — The Collector
+Parsers for Linux `/proc` filesystem.
+
+| File | Purpose |
+|------|---------|
+| `procfs.c` | Low-level file reading with `O_CLOEXEC` |
+| `scan.c` | Directory walker — reads `/proc/*/` for numeric PIDs |
+| `pid_stat.c` | Parses `/proc/[pid]/stat` — state, CPU times, RSS |
+| `pid_status.c` | Parses `/proc/[pid]/status` — VmRSS, UID, memory details |
+| `smaps.c` | **3-level memory parser** with fallbacks (smaps_rollup → smaps → status) |
+| `meminfo.c` | Parses `/proc/meminfo` — system RAM/swap totals |
+| `pid_io.c` | Parses `/proc/[pid]/io` — I/O bytes (requires root) |
+
+---
+
+### 📂 src/ui/ — The Display
+ncurses-based terminal interface.
+
+| File | Purpose |
+|------|---------|
+| `display.c` | **Main renderer** — list view, inspect view, input handling, colors |
+| `view.c` | **ViewState** — Freezes UI state during render for stable selection |
+| `gauge.c` | Unicode block gauges `[████████░░░░]` |
+| `sparkline.c` | Multi-row vertical bar graphs for memory trends |
+| `box.c` | Box-drawing utilities with Unicode characters |
+
+#### Key Concepts in UI
+
+**Auto-Baseline Tracking:**
+```c
+// display.c maintains a hashmap of first-seen RSS per PID
+static baseline_entry_t baseline_hash[BASELINE_HASH_SIZE];
+
+// Delta shows change since first observation
+double delta = current_rss - get_first_rss(pid, current_rss, start_time);
+```
+
+**ViewState Pattern:**
+```c
+// Freeze visible rows at render time
+view_begin_frame(selected_idx, scroll, visible, group_mode);
+// ... populate rows ...
+view_end_frame();
+
+// Later, when Enter is pressed:
+pid_t pid = view_get_selected_pid();  // Returns frozen PID
+```
+
+---
+
+### 📂 src/util/ — The Foundation
+Generic infrastructure code.
+
+| File | Purpose |
+|------|---------|
+| `arena.c` | **Linear allocator** — Zero-malloc in hot path, O(1) alloc/reset |
+| `log.c` | Timestamped logging to stderr |
+| `uid_cache.c` | UID → username caching (avoids repeated `getpwuid()` calls) |
+| `proc_map.c` | PID hashmap for persistent entity tracking |
 
 ---
 
 ## 📂 inc/ (Header Files)
-The "Contracts". These define the data structures and function prototypes.
 
-### `inc/core/` (Business Logic)
-* **`sample.h`**
-    * **Task:** Defines the Data Model. **(The most important file)**.
-    * **Details:** Defines `struct process_snapshot_t` and `struct sample_t`. This is the layout of the data inside the Arena.
-* **`diff.h`**
-    * **Task:** Defines the Comparison Logic.
-    * **Details:** Prototypes for `diff_samples(old, new)`. Defines structures for reporting changes (e.g., `struct process_diff_t`).
-* **`time.h`**
-    * **Task:** Time standardization.
-    * **Details:** Prototypes for getting high-precision monotonic time (nanoseconds).
+### inc/core/
+| Header | Defines |
+|--------|---------|
+| `sample.h` | `process_snapshot_t`, `sample_t`, `sample_capture()` |
+| `time.h` | `time_now_ms()`, `time_sleep_ms()` |
+| `diff.h` | `diff_samples()` (comparison logic) |
+| `engine.h` | Background collector interface |
+| `entity.h` | Persistent process entity tracking |
 
-### `inc/proc/` (Data Source)
-* **`procfs.h`**
-    * **Task:** The Linux API abstraction.
-    * **Details:** Defines the paths (`/proc`, `/proc/meminfo`). Prototypes for the parser functions.
-* **`pid.h`**
-    * **Task:** Process-specific helpers.
-    * **Details:** Helpers for PID validation, checking if a PID is alive, etc.
+### inc/proc/
+| Header | Defines |
+|--------|---------|
+| `procfs.h` | `procfs_read_file()`, path constants |
+| `pid.h` | PID validation helpers |
+| `smaps.h` | `smaps_breakdown_t`, `pid_get_memory_detail()` |
 
-### `inc/util/` (Infrastructure)
-* **`arena.h`**
-    * **Task:** The Memory Allocator Interface.
-    * **Details:** Prototypes for `arena_create`, `arena_alloc`, `arena_reset`. This is the engine of the project.
-* **`log.h`**
-    * **Task:** Logging macros.
-    * **Details:** Macros `LOG_INFO`, `LOG_ERR` that print to stderr with timestamps.
-* **`hashmap.h`**
-    * **Task:** Fast lookup interface (Optional).
-    * **Details:** If implemented, provides `map_put` and `map_get` for O(1) PID lookups.
+### inc/ui/
+| Header | Defines |
+|--------|---------|
+| `display.h` | `ui_init()`, `ui_draw()`, `ui_poll_input()` |
+| `view.h` | `ViewState`, `ViewRow`, `view_get_selected_pid()` |
+| `gauge.h` | `gauge_draw()`, `gauge_draw_colored()` |
+| `sparkline.h` | `sparkline_draw()` |
+| `box.h` | Box drawing utilities |
 
----
-
-## 📂 src/core/ ( The Brain)
-These files implement the logic that makes sense of the raw data.
-
-* **`sample.c`**
-    * **Task:** The Coordinator.
-    * **Details:**
-        * Implements `sample_capture(Arena *a)`.
-        * Calls `scan.c` to find PIDs.
-        * Calls `pid_stat.c` etc. to fill the structs.
-        * Sorts the array of processes by PID (for efficient diffing).
-* **`diff.c`**
-    * **Task:** The Analyst.
-    * **Details:**
-        * Compares two sorted `sample_t` arrays.
-        * Detects: New processes, Dead processes, Memory Growth, CPU spikes.
-        * Returns a report or prints directly to stdout.
-* **`time.c`**
-    * **Task:** The Clock.
-    * **Details:** Wrappers around `clock_gettime(CLOCK_MONOTONIC)` to ensure all timestamps are comparable.
+### inc/util/
+| Header | Defines |
+|--------|---------|
+| `arena.h` | `Arena`, `arena_create()`, `arena_alloc()`, `arena_reset()` |
+| `log.h` | `LOG_INFO`, `LOG_ERR` macros |
+| `hashmap.h` | Generic hashmap interface |
+| `uid_cache.h` | `uid_to_name()` |
+| `proc_map.h` | `ProcMap` for PID → entity mapping |
 
 ---
 
-## 📂 src/proc/ (The Collector)
-These files do the dirty work of parsing text files from Linux.
+## 📂 tests/ — Quality Assurance
 
-* **`scan.c`**
-    * **Task:** The Directory Walker.
-    * **Details:** Opens `/proc`, calls `readdir`. Filters out non-numeric entries. Returns a list of PIDs to process.
-* **`stat.c`** (or `meminfo.c`)
-    * **Task:** System-wide metrics.
-    * **Details:** Parses `/proc/meminfo` (Total RAM, Free RAM) and `/proc/stat` (System CPU).
-* **`pid_stat.c`**
-    * **Task:** Basic Process Metrics.
-    * **Details:** Parses `/proc/[pid]/stat`.
-    * **Key Fields:** State, Parent PID, User CPU, System CPU, Priority, Threads.
-* **`pid_status.c`**
-    * **Task:** Detailed Memory Metrics.
-    * **Details:** Parses `/proc/[pid]/status`.
-    * **Key Fields:** `VmRSS`, `RssAnon` (Heap/Stack), `RssFile` (Libraries), `VmSwap`. *Crucial for memory forensics.*
-* **`pid_io.c`**
-    * **Task:** Disk IO Metrics.
-    * **Details:** Parses `/proc/[pid]/io`.
-    * **Note:** Requires root usually. Must fail gracefully if permission denied.
+| File | Purpose |
+|------|---------|
+| `leak_test.c` | Memory leak simulator — allocates N MB, grows M MB/sec |
+| `test_history.c` | Tests for history tracking |
 
 ---
 
-## 📂 src/util/ (The Foundation)
-Generic C code that could exist in any project.
+## 📂 tools/ — Utilities
 
-* **`arena.c`**
-    * **Task:** The Linear Allocator Implementation.
-    * **Details:** Manages the big `malloc` block. Advances a pointer on `alloc`. Resets pointer on `reset`. **Zero overhead.**
-* **`log.c`**
-    * **Task:** Logger implementation.
-    * **Details:** Formats strings with `vfprintf` and adds colors/timestamps.
-* **`hashmap.c`**
-    * **Task:** Hashmap implementation.
-    * **Details:** Integer-keyed hashmap (PID -> Pointer).
+| File | Purpose |
+|------|---------|
+| `proc_dump.c` | Dumps parsed content of a specific PID |
+| `replay.c` | Post-mortem analysis (future feature) |
 
 ---
 
-## 📂 tests/ (Quality Assurance)
-Unit tests to ensure the parser doesn't segfault on weird inputs.
+## Data Flow Diagram
 
-* **`test_pid_parse.c`**
-    * **Task:** Validate the parser logic.
-    * **Details:** Feeds a dummy string (like a fake `/proc/pid/stat` line) into the parser functions and asserts that the struct fields match the string.
-* **`test_diff.c`**
-    * **Task:** Validate the logic engine.
-    * **Details:** Manually constructs two `sample_t` structs (one "before", one "after") and asserts that `diff_samples` correctly identifies the change.
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           MAIN LOOP                                  │
+│                                                                       │
+│  ┌──────────┐      ┌─────────────┐      ┌─────────┐                  │
+│  │  INPUT   │─────►│   CAPTURE   │─────►│ RENDER  │                  │
+│  │  (60fps) │      │   (1 Hz)    │      │ (60fps) │                  │
+│  └──────────┘      └─────────────┘      └─────────┘                  │
+│       │                  │                   │                        │
+│       ▼                  ▼                   ▼                        │
+│  ui_poll_input()   sample_capture()     ui_draw()                    │
+│                    ┌─────────────┐      ui_draw_detail()             │
+│                    │  /proc/*    │                                    │
+│                    │  parsing    │                                    │
+│                    └─────────────┘                                    │
+└─────────────────────────────────────────────────────────────────────┘
 
----
-
-## 📂 tools/ (Utilities)
-Standalone mini-programs for debugging or specific features.
-
-* **`proc_dump.c`**
-    * **Task:** Debugging tool.
-    * **Details:** A small `main()` that just dumps the parsed content of a specific PID to stdout. Useful to verify parsing without running the full engine.
-* **`replay.c`**
-    * **Task:** Post-mortem analysis (Future Feature).
-    * **Details:** Reads a binary file (saved history) and "plays it back" through the diff engine, simulating a live run.
+Memory: Arena Double-Buffering
+┌──────────┐    ┌──────────┐    ┌──────────────┐
+│ arena_a  │◄──►│ arena_b  │    │arena_baseline│
+│ (curr)   │swap│ (prev)   │    │  (frozen)    │
+└──────────┘    └──────────┘    └──────────────┘
+```
