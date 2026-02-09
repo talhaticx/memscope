@@ -40,4 +40,14 @@ void gauge_draw_labeled(int y, int x, const char *label,
  */
 void gauge_draw_colored(int y, int x, int width, double current, double max, int color_pair);
 
+/**
+ * Draw a single vertical bar level (for sparkline-style graphs).
+ * Uses block levels ▁▂▃▄▅▆▇█
+ * @param y Row position
+ * @param x Column position
+ * @param percent Value 0.0 to 100.0
+ * @param color_pair NCurses color pair
+ */
+void gauge_draw_vertical_bar(int y, int x, double percent, int color_pair);
+
 #endif // MEMSCOPE_GAUGE_H

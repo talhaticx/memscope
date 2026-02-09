@@ -2,6 +2,7 @@
 #include "ui/display.h"
 #include "ui/gauge.h"
 #include "ui/sparkline.h"
+#include "ui/view.h"
 #include <ncurses.h>
 #include <locale.h>
 #include <string.h>
@@ -33,6 +34,37 @@
 static int group_mode = 0; // 0 = List, 1 = Group
 static int scroll_offset = 0;
 
+// --- Auto-baseline tracking (first-seen RSS per PID) ---
+#define BASELINE_HASH_SIZE 4096
+typedef struct {
+    pid_t pid;
+    uint64_t first_rss;  // First-seen RSS in bytes
+    uint64_t start_time; // To detect PID reuse
+} baseline_entry_t;
+static baseline_entry_t baseline_hash[BASELINE_HASH_SIZE];
+
+// Get or create baseline entry for a process
+static uint64_t get_first_rss(pid_t pid, uint64_t current_rss, uint64_t start_time) {
+    size_t idx = (size_t)pid % BASELINE_HASH_SIZE;
+    baseline_entry_t *e = &baseline_hash[idx];
+    
+    // Check if this is same process (PID + start_time match) or new
+    if (e->pid == pid && e->start_time == start_time) {
+        return e->first_rss;  // Return cached first-seen value
+    }
+    
+    // New process or PID reused - set new baseline
+    e->pid = pid;
+    e->first_rss = current_rss;
+    e->start_time = start_time;
+    return current_rss;
+}
+
+// Clear all baselines (when user presses Space for manual baseline)
+static void clear_all_baselines(void) {
+    memset(baseline_hash, 0, sizeof(baseline_hash));
+}
+
 typedef enum {
     SORT_CPU_DESC = 0,
     SORT_RSS_DESC,
@@ -40,7 +72,7 @@ typedef enum {
     SORT_PID_ASC
 } sort_mode_t;
 
-static sort_mode_t current_sort = SORT_CPU_DESC;
+static sort_mode_t current_sort = SORT_RSS_DESC;
 
 // --- View Item (List Mode) ---
 typedef struct {
@@ -169,15 +201,18 @@ void ui_toggle_grouping(void) {
     scroll_offset = 0; // Reset scroll on toggle
 }
 
+void ui_reset_baselines(void) {
+    clear_all_baselines();
+}
+
 void ui_draw(const sample_t *curr, const sample_t *compare, int selected_idx, int has_baseline) {
     erase();
     int screen_w = COLS;
     int screen_h = LINES;
     int visible_rows = screen_h - 6;
 
-    // Scroll Logic
-    if (selected_idx < scroll_offset) scroll_offset = selected_idx;
-    if (selected_idx >= scroll_offset + visible_rows) scroll_offset = selected_idx - visible_rows + 1;
+    // Initialize ViewState for this frame
+    view_begin_frame(selected_idx, scroll_offset, visible_rows, group_mode);
     if (scroll_offset < 0) scroll_offset = 0;
 
     // Header
@@ -243,11 +278,12 @@ void ui_draw(const sample_t *curr, const sample_t *compare, int selected_idx, in
             views[i].cpu_pct = 0;
             views[i].rss_delta_mb = 0;
             views[i].tags = 0;
+            uint64_t first_rss = get_first_rss(p->pid, p->rss_bytes, p->start_time);
+            views[i].rss_delta_mb = ((int64_t)p->rss_bytes - (int64_t)first_rss) / (1024.0 * 1024.0);
             const process_snapshot_t *old = find_prev(compare, p->pid, &hint);
             if (old) {
                 uint64_t cpu_d = (p->utime_ms + p->stime_ms) - (old->utime_ms + old->stime_ms);
                 views[i].cpu_pct = (double)cpu_d * 100.0 / (double)dt_ms;
-                views[i].rss_delta_mb = ((int64_t)p->rss_bytes - (int64_t)old->rss_bytes) / (1024.0 * 1024.0);
             }
             if (views[i].rss_delta_mb > 10.0) views[i].tags |= TAG_LEAK;
             if (views[i].cpu_pct > 80.0) views[i].tags |= TAG_SPIKE;
@@ -264,6 +300,21 @@ void ui_draw(const sample_t *curr, const sample_t *compare, int selected_idx, in
         }
         items = views;
         count = curr->process_count;
+        
+        // Populate ViewState with sorted data
+        for (size_t i = 0; i < count && i < VIEW_MAX_ROWS; i++) {
+            ViewRow vr = {
+                .pid = views[i].proc->pid,
+                .cpu_pct = views[i].cpu_pct,
+                .rss_bytes = views[i].proc->rss_bytes,
+                .rss_delta_mb = views[i].rss_delta_mb,
+                .tags = views[i].tags,
+                .is_group = false,
+                .group_count = 1
+            };
+            strncpy(vr.comm, views[i].proc->comm, sizeof(vr.comm) - 1);
+            view_add_row(&vr);
+        }
     } else {
         // --- GROUP MODE ---
         // Max groups possible is process_count, usually much less
@@ -323,7 +374,32 @@ void ui_draw(const sample_t *curr, const sample_t *compare, int selected_idx, in
             default: qsort(groups, count, sizeof(proc_group_t), cmp_group_cpu); break;
         }
         items = groups;
+        
+        // Populate ViewState with sorted group data
+        for (size_t i = 0; i < count && i < VIEW_MAX_ROWS; i++) {
+            ViewRow vr = {
+                .pid = groups[i].representative_pid,
+                .cpu_pct = groups[i].total_cpu,
+                .rss_bytes = groups[i].total_rss,
+                .rss_delta_mb = groups[i].total_delta,
+                .tags = groups[i].tags,
+                .is_group = true,
+                .group_count = groups[i].count
+            };
+            strncpy(vr.comm, groups[i].name, sizeof(vr.comm) - 1);
+            view_add_row(&vr);
+        }
     }
+
+    // Finalize ViewState and get accurate count
+    view_end_frame();
+    const ViewState *vs = view_get_state();
+    count = vs->count;  // Use ViewState count
+    
+    // Scroll Logic (based on finalized ViewState)
+    if (selected_idx < scroll_offset) scroll_offset = selected_idx;
+    if (selected_idx >= scroll_offset + visible_rows) scroll_offset = selected_idx - visible_rows + 1;
+    if (scroll_offset < 0) scroll_offset = 0;
 
     // Draw Items
     int row_start = 4;
@@ -438,89 +514,19 @@ void ui_draw(const sample_t *curr, const sample_t *compare, int selected_idx, in
     free(items);
 }
 
-// Helper for selection logic (needed for main.c)
+// Get selected PID using ViewState (THE FIX for the Enter key bug)
+// This now reads from the frozen snapshot, NOT recalculating
 pid_t ui_get_selected_pid(const sample_t *curr, const sample_t *prev, int selected_idx) {
-    // Note: Re-calculating this is inefficient but safe. 
-    // In a real optimized app we'd cache the view state.
-    // Use List Mode logic for PID extraction as Group Mode isn't fully inspectable yet (or inspects representative)
+    (void)curr;  // Unused - we use ViewState now
+    (void)prev;
+    (void)selected_idx;
     
-    // We reuse the logic from ui_draw but just for extracting PID
-    // Force LIST mode calculation for now if in list mode
-    // If in GROUP mode, we return representative PID
-    
-    void *items = NULL;
-    size_t count = 0;
-    
-    // ... Copy-paste logic of data gen ...
-    // Simplified: Just run the same generation code as ui_draw
-    
-    if (!group_mode) {
-         proc_view_t *views = malloc(sizeof(proc_view_t) * curr->process_count);
-        uint64_t dt_ms = prev ? (curr->timestamp_ms - prev->timestamp_ms) : 1;
-        if (dt_ms == 0) dt_ms = 1;
-        int hint = 0;
-        for (size_t i = 0; i < curr->process_count; i++) {
-            const process_snapshot_t *p = &curr->processes[i];
-            views[i].proc = p;
-            views[i].cpu_pct = 0;
-            const process_snapshot_t *old = find_prev(prev, p->pid, &hint);
-            if (old) {
-                uint64_t cpu_d = (p->utime_ms + p->stime_ms) - (old->utime_ms + old->stime_ms);
-                views[i].cpu_pct = (double)cpu_d * 100.0 / (double)dt_ms;
-            }
-            views[i].rss_delta_mb = 0; // Not needed for sorting except delta sort
-        }
-         switch (current_sort) {
-            case SORT_CPU_DESC: qsort(views, curr->process_count, sizeof(proc_view_t), cmp_cpu); break;
-            case SORT_RSS_DESC: qsort(views, curr->process_count, sizeof(proc_view_t), cmp_rss); break;
-            case SORT_RSS_DELTA_DESC: qsort(views, curr->process_count, sizeof(proc_view_t), cmp_delta); break;
-            case SORT_PID_ASC: qsort(views, curr->process_count, sizeof(proc_view_t), cmp_pid); break;
-        }
-        items = views;
-        count = curr->process_count;
-        
-        pid_t ret = -1;
-        if (selected_idx >= 0 && selected_idx < (int)count) ret = ((proc_view_t*)items)[selected_idx].proc->pid;
-        free(items);
-        return ret;
-    } else {
-        // Group mode...
-        proc_group_t *groups = calloc(curr->process_count, sizeof(proc_group_t));
-        count = 0;
-        uint64_t dt_ms = prev ? (curr->timestamp_ms - prev->timestamp_ms) : 1;
-        if (dt_ms == 0) dt_ms = 1;
-        int hint = 0;
-        
-        for (size_t i = 0; i < curr->process_count; i++) {
-            const process_snapshot_t *p = &curr->processes[i];
-            int found = -1;
-            for (size_t g = 0; g < count; g++) { if (strncmp(groups[g].name, p->comm, 63) == 0) { found = g; break; } }
-            if (found == -1) { found = count++; strncpy(groups[found].name, p->comm, 63); groups[found].representative_pid = p->pid; }
-            proc_group_t *grp = &groups[found];
-            grp->count++;
-            grp->total_rss += p->rss_bytes;
-             const process_snapshot_t *old = find_prev(prev, p->pid, &hint);
-            if (old) {
-                uint64_t cpu_d = (p->utime_ms + p->stime_ms) - (old->utime_ms + old->stime_ms);
-                grp->total_cpu += (double)cpu_d * 100.0 / (double)dt_ms;
-                grp->total_delta += ((int64_t)p->rss_bytes - (int64_t)old->rss_bytes) / (1024.0 * 1024.0);
-            }
-        }
-        switch (current_sort) {
-            case SORT_CPU_DESC: qsort(groups, count, sizeof(proc_group_t), cmp_group_cpu); break;
-            case SORT_RSS_DESC: qsort(groups, count, sizeof(proc_group_t), cmp_group_rss); break;
-             case SORT_RSS_DELTA_DESC: qsort(groups, count, sizeof(proc_group_t), cmp_group_delta); break;
-             default: break;
-        }
-        
-        pid_t ret = -1;
-        if (selected_idx >= 0 && selected_idx < (int)count) ret = ((proc_group_t*)groups)[selected_idx].representative_pid;
-        free(groups);
-        return ret;
-    }
+    // Simply delegate to the ViewState which was frozen during render
+    return view_get_selected_pid();
 }
 
-void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *curr, const double *history, int history_count) {
+void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const smaps_breakdown_t *baseline,
+                   const sample_t *curr, const double *history, int history_count) {
     erase();
     int w = COLS, h = LINES;
     
@@ -554,10 +560,16 @@ void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *c
     attroff(A_BOLD);
     
     attron(COLOR_PAIR(COL_BORDER));
-    mvhline(row++, left_col, '-', 40);
+    mvhline(row++, left_col, '-', 44);
     attroff(COLOR_PAIR(COL_BORDER));
     
     double total_rss = smaps->total_rss_kb / 1024.0;
+    double baseline_rss = baseline ? baseline->total_rss_kb / 1024.0 : total_rss;
+    // Use 2x baseline as max for gauge to show growth visually
+    // At baseline, gauge is 50% full. At 2x baseline, 100% full.
+    double gauge_max = baseline_rss * 2.0;
+    if (gauge_max < 1.0) gauge_max = total_rss * 2.0;
+    if (gauge_max < 1.0) gauge_max = 100.0; // Fallback
     int has_data = (total_rss > 0.01); // Check if we have real data
     if (total_rss < 0.01) total_rss = 1.0; // Avoid div by zero for gauge
     
@@ -574,35 +586,54 @@ void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *c
     
     // Private/Heap
     double heap_mb = smaps->heap_kb / 1024.0;
-    double heap_pct = (total_rss > 0) ? (heap_mb / total_rss) * 100.0 : 0;
+    double heap_baseline = baseline ? baseline->heap_kb / 1024.0 : heap_mb;
+    double heap_delta = heap_mb - heap_baseline;
+    double heap_max = heap_baseline * 2.0;
+    if (heap_max < 1.0) heap_max = gauge_max;
     mvprintw(row, left_col, "Private");
-    gauge_draw_colored(row, left_col + 9, 18, heap_mb, total_rss, COL_BAR_MED);
+    gauge_draw_colored(row, left_col + 9, 16, heap_mb, heap_max, COL_BAR_MED);
     attron(COLOR_PAIR(COL_MEM_VAL));
-    mvprintw(row, left_col + 28, "%7.2f MB", heap_mb);
+    mvprintw(row, left_col + 26, "%7.2f MB", heap_mb);
     attroff(COLOR_PAIR(COL_MEM_VAL));
-    mvprintw(row, left_col + 38, "%5.1f%%", heap_pct);
+    // Delta
+    int delta_col = (heap_delta >= 0) ? COL_DELTA_POS : COL_DELTA_NEG;
+    attron(COLOR_PAIR(delta_col));
+    mvprintw(row, left_col + 37, "%+.1f", heap_delta);
+    attroff(COLOR_PAIR(delta_col));
     row++;
     
     // Anon
     double anon_mb = smaps->anon_kb / 1024.0;
-    double anon_pct = (total_rss > 0) ? (anon_mb / total_rss) * 100.0 : 0;
+    double anon_baseline = baseline ? baseline->anon_kb / 1024.0 : anon_mb;
+    double anon_delta = anon_mb - anon_baseline;
+    double anon_max = anon_baseline * 2.0;
+    if (anon_max < 1.0) anon_max = gauge_max;
     mvprintw(row, left_col, "Anon");
-    gauge_draw_colored(row, left_col + 9, 18, anon_mb, total_rss, COL_BAR_LOW);
+    gauge_draw_colored(row, left_col + 9, 16, anon_mb, anon_max, COL_BAR_LOW);
     attron(COLOR_PAIR(COL_MEM_VAL));
-    mvprintw(row, left_col + 28, "%7.2f MB", anon_mb);
+    mvprintw(row, left_col + 26, "%7.2f MB", anon_mb);
     attroff(COLOR_PAIR(COL_MEM_VAL));
-    mvprintw(row, left_col + 38, "%5.1f%%", anon_pct);
+    delta_col = (anon_delta >= 0) ? COL_DELTA_POS : COL_DELTA_NEG;
+    attron(COLOR_PAIR(delta_col));
+    mvprintw(row, left_col + 37, "%+.1f", anon_delta);
+    attroff(COLOR_PAIR(delta_col));
     row++;
     
     // Shared/File-backed
     double shared_mb = smaps->shared_kb / 1024.0;
-    double shared_pct = (total_rss > 0) ? (shared_mb / total_rss) * 100.0 : 0;
+    double shared_baseline = baseline ? baseline->shared_kb / 1024.0 : shared_mb;
+    double shared_delta = shared_mb - shared_baseline;
+    double shared_max = shared_baseline * 2.0;
+    if (shared_max < 1.0) shared_max = gauge_max > 10.0 ? gauge_max * 0.1 : 10.0; // File is usually small
     mvprintw(row, left_col, "File");
-    gauge_draw_colored(row, left_col + 9, 18, shared_mb, total_rss, COL_BORDER);
+    gauge_draw_colored(row, left_col + 9, 16, shared_mb, shared_max, COL_BORDER);
     attron(COLOR_PAIR(COL_MEM_VAL));
-    mvprintw(row, left_col + 28, "%7.2f MB", shared_mb);
+    mvprintw(row, left_col + 26, "%7.2f MB", shared_mb);
     attroff(COLOR_PAIR(COL_MEM_VAL));
-    mvprintw(row, left_col + 38, "%5.1f%%", shared_pct);
+    delta_col = (shared_delta >= 0) ? COL_DELTA_POS : COL_DELTA_NEG;
+    attron(COLOR_PAIR(delta_col));
+    mvprintw(row, left_col + 37, "%+.1f", shared_delta);
+    attroff(COLOR_PAIR(delta_col));
     row++;
     
     // Swap
@@ -625,11 +656,18 @@ void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *c
     
     attron(A_BOLD);
     double pss_mb = smaps->total_pss_kb / 1024.0;
+    double rss_delta = total_rss - baseline_rss;
     mvprintw(row, left_col, "Total RSS:");
-    mvprintw(row, left_col + 28, "%7.2f MB", total_rss);
+    attron(COLOR_PAIR(COL_MEM_VAL));
+    mvprintw(row, left_col + 26, "%7.2f MB", total_rss);
+    attroff(COLOR_PAIR(COL_MEM_VAL));
+    delta_col = (rss_delta >= 0) ? COL_DELTA_POS : COL_DELTA_NEG;
+    attron(COLOR_PAIR(delta_col));
+    mvprintw(row, left_col + 37, "%+.1f", rss_delta);
+    attroff(COLOR_PAIR(delta_col));
     row++;
     mvprintw(row, left_col, "Total PSS:");
-    mvprintw(row, left_col + 28, "%7.2f MB", pss_mb);
+    mvprintw(row, left_col + 26, "%7.2f MB", pss_mb);
     attroff(A_BOLD);
     row++;
     
@@ -651,7 +689,7 @@ void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *c
     mvhline(row++, right_col, '-', w - right_col - 2);
     attroff(COLOR_PAIR(COL_BORDER));
     
-    // Sparkline display
+    // Sparkline display - multi-row vertical bar graph
     if (history_count > 0) {
         // Find min/max for display
         double hmin = history[0], hmax = history[0];
@@ -660,19 +698,74 @@ void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *c
             if (history[i] > hmax) hmax = history[i];
         }
         
-        // Draw sparkline using the draw function (proper ncurses output)
-        int spark_width = w - right_col - 4;
-        if (spark_width > 60) spark_width = 60;
+        // Graph dimensions - fit within right column
+        int graph_height = 6;  // Number of rows for the graph
+        int spark_width = w - right_col - 12; // Leave room for Y-axis labels
+        if (spark_width > 40) spark_width = 40;
+        if (spark_width < 10) spark_width = 10;
         if (spark_width > history_count) spark_width = history_count;
         
-        attron(COLOR_PAIR(COL_BAR_LOW) | A_BOLD);
-        sparkline_draw(row, right_col, history, history_count, spark_width);
-        attroff(COLOR_PAIR(COL_BAR_LOW) | A_BOLD);
-        row += 2;
+        // Calculate range with padding
+        double range = hmax - hmin;
+        if (range < 1.0) range = 1.0; // Minimum range of 1MB
+        double padded_min = hmin - range * 0.05;
+        double padded_max = hmax + range * 0.05;
+        if (padded_min < 0) padded_min = 0;
+        double padded_range = padded_max - padded_min;
+        if (padded_range < 1.0) padded_range = 1.0;
+        
+        // Draw Y-axis labels (top, middle, bottom)
+        attron(COLOR_PAIR(COL_BORDER));
+        mvprintw(row, right_col, "%6.0f", padded_max);
+        mvprintw(row + graph_height/2, right_col, "%6.0f", (padded_max + padded_min) / 2.0);
+        mvprintw(row + graph_height - 1, right_col, "%6.0f", padded_min);
+        attroff(COLOR_PAIR(COL_BORDER));
+        
+        // Draw multi-row graph
+        int graph_x = right_col + 7;
+        size_t start_idx = (size_t)history_count > (size_t)spark_width ? (size_t)history_count - (size_t)spark_width : 0;
+        
+        for (int graph_row = 0; graph_row < graph_height; graph_row++) {
+            double row_threshold = padded_max - (padded_range * (graph_row + 0.5) / graph_height);
+            
+            for (int col = 0; col < spark_width && (start_idx + col) < (size_t)history_count; col++) {
+                double val = history[start_idx + col];
+                
+                // Determine fill level for this cell
+                double cell_top = padded_max - (padded_range * graph_row / graph_height);
+                double cell_bottom = padded_max - (padded_range * (graph_row + 1) / graph_height);
+                
+                move(row + graph_row, graph_x + col);
+                
+                if (val >= cell_top) {
+                    // Full block
+                    attron(COLOR_PAIR(COL_BAR_LOW) | A_BOLD);
+                    addstr("█");
+                    attroff(COLOR_PAIR(COL_BAR_LOW) | A_BOLD);
+                } else if (val > cell_bottom) {
+                    // Partial block - calculate which Unicode block char to use
+                    double fill = (val - cell_bottom) / (cell_top - cell_bottom);
+                    const char *blocks[] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+                    int idx = (int)(fill * 8);
+                    if (idx < 0) idx = 0;
+                    if (idx > 8) idx = 8;
+                    attron(COLOR_PAIR(COL_BAR_LOW));
+                    addstr(blocks[idx]);
+                    attroff(COLOR_PAIR(COL_BAR_LOW));
+                } else {
+                    // Empty
+                    addstr(" ");
+                }
+            }
+        }
+        
+        row += graph_height + 1;
         
         // Min/Max/Current labels
-        mvprintw(row++, right_col, "Min: %.1f MB  Max: %.1f MB", hmin, hmax);
+        mvprintw(row++, right_col, "Range: %.1f - %.1f MB", hmin, hmax);
+        attron(COLOR_PAIR(COL_MEM_VAL) | A_BOLD);
         mvprintw(row++, right_col, "Current: %.2f MB", history[history_count - 1]);
+        attroff(COLOR_PAIR(COL_MEM_VAL) | A_BOLD);
     } else {
         attron(COLOR_PAIR(COL_BORDER));
         mvprintw(row++, right_col, "(collecting data...)");
@@ -685,7 +778,7 @@ void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *c
     attroff(COLOR_PAIR(COL_BORDER));
     
     attron(COLOR_PAIR(COL_FOOTER));
-    mvprintw(h - 1, 1, " ESC: Back | Live inspection | RSS=Resident  PSS=Proportional ");
+    mvprintw(h - 1, 1, " ESC:Back | Space:Reset Baseline | RSS=Resident  PSS=Proportional ");
     attroff(COLOR_PAIR(COL_FOOTER));
     
     refresh();

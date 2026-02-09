@@ -19,9 +19,10 @@ void ui_cleanup(void);
 void ui_draw(const sample_t *curr, const sample_t *compare, int selected_idx, int has_baseline);
 
 // Draw detailed inspection view for a single process
-// history: Array of last N CPU usage values (or RSS) for sparkline
-void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const sample_t *curr, 
-                   const double *history, int history_count);
+// baseline: Baseline smaps for delta comparison
+// history: Array of last N RSS values for sparkline
+void ui_draw_detail(pid_t pid, const smaps_breakdown_t *smaps, const smaps_breakdown_t *baseline,
+                   const sample_t *curr, const double *history, int history_count);
 
 // Get the PID of the process at the selected row (after sorting)
 // Returns -1 if invalid
@@ -29,6 +30,9 @@ pid_t ui_get_selected_pid(const sample_t *curr, const sample_t *prev, int select
 
 // Toggle between List and Group mode
 void ui_toggle_grouping(void);
+
+// Reset all auto-baselines (call when Space is pressed for manual baseline)
+void ui_reset_baselines(void);
 
 // Handle user input (Non-blocking)
 // Returns: 

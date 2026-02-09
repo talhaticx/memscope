@@ -23,4 +23,9 @@ void pid_parse_io(pid_t pid, process_snapshot_t *out);
  */
 void pid_parse_status(pid_t pid, process_snapshot_t *out);
 
+/**
+ * Get UID for a process (parses from /proc/[pid]/status)
+ */
+uid_t pid_parse_uid(pid_t pid);
+
 #endif // MEMSCOPE_PID_H

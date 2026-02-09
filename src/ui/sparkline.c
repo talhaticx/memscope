@@ -4,9 +4,9 @@
 #include <string.h>
 #include <float.h>
 
-// ASCII sparkline characters (8 levels from low to high)
-// Uses characters that are universally available
-static const char SPARK_CHARS[] = "_.-~=*#@";
+// Unicode sparkline characters (8 levels from low to high)
+// These render as proper vertical bars for beautiful graphs
+static const char *SPARK_CHARS[] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
 #define SPARK_LEVELS 8
 
 void sparkline_draw(int y, int x, const double *values, size_t count, int width) {
@@ -39,7 +39,8 @@ void sparkline_draw(int y, int x, const double *values, size_t count, int width)
         if (level < 0) level = 0;
         if (level >= SPARK_LEVELS) level = SPARK_LEVELS - 1;
 
-        addch(SPARK_CHARS[level]);
+        // Use addstr for multi-byte Unicode characters
+        addstr(SPARK_CHARS[level]);
     }
 }
 
@@ -58,7 +59,7 @@ void sparkline_to_str(char *out, const double *values, size_t count, double min_
         start_idx = count - width;
     }
 
-    int out_idx = 0;
+    int out_pos = 0;
     for (int i = 0; i < width && (start_idx + i) < count; i++) {
         size_t idx = start_idx + i;
         
@@ -71,7 +72,11 @@ void sparkline_to_str(char *out, const double *values, size_t count, double min_
         if (level < 0) level = 0;
         if (level >= SPARK_LEVELS) level = SPARK_LEVELS - 1;
 
-        out[out_idx++] = SPARK_CHARS[level];
+        // Copy multi-byte Unicode character
+        const char *ch = SPARK_CHARS[level];
+        while (*ch) {
+            out[out_pos++] = *ch++;
+        }
     }
-    out[out_idx] = '\0';
+    out[out_pos] = '\0';
 }

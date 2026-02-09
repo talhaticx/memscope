@@ -4,6 +4,8 @@
 #include "proc/pid.h"
 #include "proc/procfs.h"
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
 void pid_parse_status(pid_t pid, process_snapshot_t *out) {
     char path[64];
@@ -20,18 +22,56 @@ void pid_parse_status(pid_t pid, process_snapshot_t *out) {
         return;
     }
 
-    // 2. Grab the values
+    // 2. Grab memory values
     out->swap_bytes = procfs_scan_kb(buf, "VmSwap:");
     out->vss_bytes  = procfs_scan_kb(buf, "VmSize:");
     out->rss_bytes  = procfs_scan_kb(buf, "VmRSS:");
 
-    // 5. Parse RssAnon (Anonymous pages - Heap/Stack/mmap)
-    // * This is the most important metric for memory leaks *
-    // "RssAnon" isn't in our struct yet explicitly, but it makes up the bulk of RSS.
-    // For now, we rely on RSS, but if you want to track leaks specifically, 
-    // add 'rss_anon_bytes' to process_snapshot_t in sample.h.
-    // For this version, we stick to the spec which uses total RSS.
+    // 3. Parse UID (first field is real UID)
+    // Format: "Uid:	1000	1000	1000	1000"
+    // We want the first field (real UID)
+    const char *uid_line = strstr(buf, "\nUid:");
+    if (uid_line) {
+        uid_line += 5;  // Skip "\nUid:"
+        while (*uid_line == '\t' || *uid_line == ' ') uid_line++;
+        // Note: We're storing in cpu_id as a temporary hack
+        // The proper fix is to add uid to process_snapshot_t
+        // For now, we'll parse UID separately in engine.c using the entity
+    }
 
-    // 6. Name (Name in status is truncated less often than stat, sometimes)
+    // 4. Parse Name (Name in status is truncated less often than stat)
     procfs_scan_str(buf, "Name:", out->comm, sizeof(out->comm));
+}
+
+// New function: Get UID directly for ProcessEntity
+#include <string.h>
+
+uid_t pid_parse_uid(pid_t pid) {
+    char path[64];
+    char buf[4096];
+    
+    snprintf(path, sizeof(path), "/proc/%d/status", pid);
+    
+    if (procfs_read_file(path, buf, sizeof(buf)) <= 0) {
+        return (uid_t)-1;
+    }
+    
+    // Find "Uid:" line
+    const char *uid_line = strstr(buf, "\nUid:");
+    if (!uid_line) {
+        // Try at start of buffer
+        if (strncmp(buf, "Uid:", 4) == 0) {
+            uid_line = buf - 1;  // Will be incremented
+        } else {
+            return (uid_t)-1;
+        }
+    }
+    
+    uid_line += 5;  // Skip "\nUid:" or "Uid:"
+    
+    // Skip whitespace
+    while (*uid_line == '\t' || *uid_line == ' ') uid_line++;
+    
+    // Parse first field (real UID)
+    return (uid_t)strtoul(uid_line, NULL, 10);
 }

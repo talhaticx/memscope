@@ -59,6 +59,10 @@ int main(void) {
     double history[HISTORY_MAX] = {0};
     int history_count = 0;
     
+    // Baseline for inspect mode
+    smaps_breakdown_t inspect_baseline = {0};
+    int has_inspect_baseline = 0;
+    
     ui_init();
 
     // ==============================================
@@ -101,6 +105,9 @@ int main(void) {
                         inspect_mode = 1;
                         inspect_pid = pid;
                         smaps_parse(inspect_pid, &inspect_smaps);
+                        // Set baseline to current smaps on entry
+                        inspect_baseline = inspect_smaps;
+                        has_inspect_baseline = 1;
                         // Reset history for new process
                         memset(history, 0, sizeof(history));
                         history_count = 0;
@@ -108,9 +115,16 @@ int main(void) {
                 }
                 break;
             case 5: // Space (Baseline)
-                has_baseline = 1;
-                arena_reset(arena_baseline);
-                sample_copy(curr, baseline, arena_baseline); // Deep copy
+                if (inspect_mode) {
+                    // In inspect mode, Space resets baseline
+                    inspect_baseline = inspect_smaps;
+                } else {
+                    // In list mode, reset all auto-baselines
+                    ui_reset_baselines();
+                    has_baseline = 1;
+                    arena_reset(arena_baseline);
+                    sample_copy(curr, baseline, arena_baseline);
+                }
                 break;
             case 7: // 'g' (Group Toggle)
                 ui_toggle_grouping();
@@ -132,30 +146,22 @@ int main(void) {
             if (inspect_mode && inspect_pid > 0) {
                 smaps_parse(inspect_pid, &inspect_smaps);
                 
-                // Update history
-                // Note: We need CPU usage for the sparkline. 
-                // Getting CPU for a single PID without a full scan is tricky with our architecture.
-                // For now, let's track RSS in the history buffer as it's readily available from smaps.
-                // Or we can scan /proc/pid/stat quickly.
-                // Let's use RSS for now as it maps to "Memory Analysis".
-                
+                // Update RSS history for sparkline
                 if (history_count < HISTORY_MAX) {
                     history[history_count++] = inspect_smaps.total_rss_kb / 1024.0;
                 } else {
-                    // Shift
                     memmove(history, history + 1, sizeof(double) * (HISTORY_MAX - 1));
                     history[HISTORY_MAX - 1] = inspect_smaps.total_rss_kb / 1024.0;
                 }
             }
             
-            if (!inspect_mode) {
-                sample_t *temp = prev; prev = curr; curr = temp;
-                Arena *ta = arena_prev; arena_prev = arena_curr; arena_curr = ta;
+            // ALWAYS capture samples (even in inspect mode) to keep data fresh
+            sample_t *temp = prev; prev = curr; curr = temp;
+            Arena *ta = arena_prev; arena_prev = arena_curr; arena_curr = ta;
 
-                arena_reset(arena_curr);
-                if (sample_capture(curr, arena_curr) == 0) {
-                    has_prev = 1;
-                }
+            arena_reset(arena_curr);
+            if (sample_capture(curr, arena_curr) == 0) {
+                has_prev = 1;
             }
         }
 
@@ -166,7 +172,7 @@ int main(void) {
             last_ui_tick = now;
             
             if (inspect_mode) {
-                ui_draw_detail(inspect_pid, &inspect_smaps, curr, history, history_count);
+                ui_draw_detail(inspect_pid, &inspect_smaps, &inspect_baseline, curr, history, history_count);
             } else {
                 // Pass baseline for delta comparison if available
                 sample_t *compare = has_baseline ? baseline : (has_prev ? prev : NULL);

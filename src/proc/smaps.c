@@ -4,31 +4,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #define ROLLUP_BUF_SIZE 4096
+#define SMAPS_BUF_SIZE  (256 * 1024)  // Full smaps can be large
+#define STATUS_BUF_SIZE 2048
 
-/**
- * Parse /proc/[pid]/smaps_rollup for aggregated memory stats.
- * smaps_rollup is much faster than parsing full smaps as the kernel
- * does the aggregation for us.
- * 
- * Format:
- *   562663f0f000-7ffdf9d2d000 ---p 00000000 00:00 0    [rollup]
- *   Rss:                2168 kB
- *   Pss:                 150 kB
- *   Pss_Anon:            108 kB
- *   Shared_Clean:       2048 kB
- *   Private_Dirty:       108 kB
- *   Anonymous:           108 kB
- *   Swap:                  0 kB
- *   ...
- */
-int smaps_parse(pid_t pid, smaps_breakdown_t *out) {
-    if (!out) return -1;
-    
-    memset(out, 0, sizeof(smaps_breakdown_t));
-    
-    // Try smaps_rollup first (faster, kernel-aggregated)
+// ============================================================
+// Level 1: smaps_rollup (fast, kernel 4.14+)
+// ============================================================
+
+static int try_smaps_rollup(pid_t pid, smaps_breakdown_t *out) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/smaps_rollup", pid);
     
@@ -41,7 +27,7 @@ int smaps_parse(pid_t pid, smaps_breakdown_t *out) {
         return -1;
     }
     
-    // Parse line by line
+    // Parse key: value pairs
     char *line = buf;
     char *end = buf + bytes;
     
@@ -50,7 +36,6 @@ int smaps_parse(pid_t pid, smaps_breakdown_t *out) {
         if (!eol) break;
         *eol = '\0';
         
-        // Parse key: value pairs
         if (strncmp(line, "Rss:", 4) == 0) {
             out->total_rss_kb = procfs_scan_u64(line, "Rss:");
         }
@@ -61,17 +46,14 @@ int smaps_parse(pid_t pid, smaps_breakdown_t *out) {
             out->anon_kb = procfs_scan_u64(line, "Pss_Anon:");
         }
         else if (strncmp(line, "Pss_File:", 9) == 0) {
-            // File-backed memory (shared libs, code)
             out->shared_kb = procfs_scan_u64(line, "Pss_File:");
         }
         else if (strncmp(line, "Anonymous:", 10) == 0) {
-            // If Pss_Anon wasn't available, use Anonymous
             if (out->anon_kb == 0) {
                 out->anon_kb = procfs_scan_u64(line, "Anonymous:");
             }
         }
         else if (strncmp(line, "Private_Dirty:", 14) == 0) {
-            // Private dirty is usually heap + stack
             out->heap_kb = procfs_scan_u64(line, "Private_Dirty:");
         }
         else if (strncmp(line, "Swap:", 5) == 0) {
@@ -81,16 +63,166 @@ int smaps_parse(pid_t pid, smaps_breakdown_t *out) {
         line = eol + 1;
     }
     
-    // smaps_rollup doesn't separate heap/stack, but we can estimate:
-    // - Heap is typically the bulk of Private_Dirty
-    // - Stack is typically very small (8-64KB)
-    // Since we can't distinguish, we'll show:
-    //   heap_kb   = Private_Dirty (already set) 
-    //   stack_kb  = 0 (not available from rollup)
-    //   anon_kb   = Pss_Anon or Anonymous
-    //   shared_kb = Pss_File (file-backed)
-    //   swap_kb   = Swap
+    free(buf);
+    return 0;
+}
+
+// ============================================================
+// Level 2: Full smaps parse (slower, more detail)
+// ============================================================
+
+static int try_smaps_full(pid_t pid, smaps_breakdown_t *out) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/smaps", pid);
+    
+    char *buf = malloc(SMAPS_BUF_SIZE);
+    if (!buf) return -1;
+    
+    ssize_t bytes = procfs_read_file(path, buf, SMAPS_BUF_SIZE);
+    if (bytes < 0) {
+        free(buf);
+        return -1;
+    }
+    
+    // Parse each memory region
+    char *line = buf;
+    char *end = buf + bytes;
+    
+    char current_region[64] = {0};
+    uint64_t region_rss = 0;
+    uint64_t region_pss = 0;
+    uint64_t region_swap = 0;
+    
+    while (line < end) {
+        char *eol = strchr(line, '\n');
+        if (!eol) break;
+        *eol = '\0';
+        
+        // Check if this is a header line (memory region)
+        // Format: 7f1234000000-7f1234001000 r-xp ... /path/to/lib.so
+        if (line[0] != ' ' && strchr(line, '-') && strchr(line, ' ')) {
+            // Find region name (last token after path)
+            char *name = strrchr(line, '/');
+            if (name) {
+                name++;  // Skip '/'
+            } else {
+                // Check for [heap], [stack], etc.
+                char *bracket = strchr(line, '[');
+                if (bracket) {
+                    name = bracket;
+                }
+            }
+            
+            if (name) {
+                strncpy(current_region, name, sizeof(current_region) - 1);
+                current_region[sizeof(current_region) - 1] = '\0';
+                // Remove trailing bracket if present
+                char *end_bracket = strchr(current_region, ']');
+                if (end_bracket) {
+                    *(end_bracket + 1) = '\0';
+                }
+            } else {
+                current_region[0] = '\0';
+            }
+        }
+        // Parse metrics
+        else if (strncmp(line, "Rss:", 4) == 0) {
+            region_rss = procfs_scan_u64(line, "Rss:");
+            out->total_rss_kb += region_rss;
+            
+            // Categorize by region name
+            if (strstr(current_region, "[heap]")) {
+                out->heap_kb += region_rss;
+            } else if (strstr(current_region, "[stack]")) {
+                out->stack_kb += region_rss;
+            } else if (strstr(current_region, ".so")) {
+                out->shared_kb += region_rss;
+            }
+        }
+        else if (strncmp(line, "Pss:", 4) == 0) {
+            region_pss = procfs_scan_u64(line, "Pss:");
+            out->total_pss_kb += region_pss;
+        }
+        else if (strncmp(line, "Swap:", 5) == 0) {
+            region_swap = procfs_scan_u64(line, "Swap:");
+            out->swap_kb += region_swap;
+        }
+        else if (strncmp(line, "Anonymous:", 10) == 0) {
+            out->anon_kb += procfs_scan_u64(line, "Anonymous:");
+        }
+        
+        line = eol + 1;
+    }
     
     free(buf);
     return 0;
+}
+
+// ============================================================
+// Level 3: Fallback to /proc/[pid]/status (VmRSS only)
+// ============================================================
+
+static int try_status_vmrss(pid_t pid, smaps_breakdown_t *out) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/status", pid);
+    
+    char buf[STATUS_BUF_SIZE];
+    ssize_t bytes = procfs_read_file(path, buf, sizeof(buf));
+    if (bytes < 0) {
+        return -1;
+    }
+    
+    // Parse VmRSS, VmSwap from status
+    out->total_rss_kb = procfs_scan_u64(buf, "VmRSS:");
+    out->swap_kb = procfs_scan_u64(buf, "VmSwap:");
+    
+    // PSS not available from status, estimate as RSS
+    out->total_pss_kb = out->total_rss_kb;
+    
+    // No detailed breakdown available
+    out->heap_kb = 0;
+    out->stack_kb = 0;
+    out->anon_kb = 0;
+    out->shared_kb = 0;
+    
+    return 0;
+}
+
+// ============================================================
+// Public API
+// ============================================================
+
+int pid_get_memory_detail(pid_t pid, smaps_breakdown_t *out, int *access_level) {
+    if (!out) return -1;
+    
+    memset(out, 0, sizeof(smaps_breakdown_t));
+    
+    int level = SMAPS_ACCESS_BASIC;
+    
+    // Try Level 1: smaps_rollup (fastest)
+    if (try_smaps_rollup(pid, out) == 0) {
+        level = SMAPS_ACCESS_FULL;
+    }
+    // Try Level 2: Full smaps
+    else if (try_smaps_full(pid, out) == 0) {
+        level = SMAPS_ACCESS_SMAPS;
+    }
+    // Fallback Level 3: VmRSS from status
+    else if (try_status_vmrss(pid, out) == 0) {
+        level = SMAPS_ACCESS_BASIC;
+    }
+    else {
+        // Complete failure
+        if (access_level) *access_level = 0;
+        return -1;
+    }
+    
+    if (access_level) *access_level = level;
+    return 0;
+}
+
+// Legacy compatibility function
+int smaps_parse(pid_t pid, smaps_breakdown_t *out) {
+    int level;
+    return pid_get_memory_detail(pid, out, &level);
 }
